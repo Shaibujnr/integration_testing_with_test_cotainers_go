@@ -12,17 +12,25 @@ import (
 )
 
 var (
-	DuplicateNoteError      = errors.New("note with same title already exists")
+	// DuplicateNoteError is returned when adding a note with a title that conflicts
+	// with that of an existing note
+	DuplicateNoteError = errors.New("note with same title already exists")
+	// SomethingWentWrongError is returned when the code returns an error we are not expecting
 	SomethingWentWrongError = errors.New("something went wrong")
-	NoteNotFoundError       = errors.New("note not found")
+	// NoteNotFoundError is returned when a note is not found
+	NoteNotFoundError = errors.New("note not found")
 )
 
+// Note represents a note that has a title and the note content
 type Note struct {
 	gorm.Model
-	Title   string `gorm:"column:title;not null;unique"`
+	// Title is the title of the note.
+	Title string `gorm:"column:title;not null;unique"`
+	// Content is the content of the note.
 	Content string `gorm:"column:content;not null"`
 }
 
+// NoteRepositoryInterface is the interface for the note repository
 type NoteRepositoryInterface interface {
 	SaveNote(note *Note) error
 	GetNoteById(id int) *Note
@@ -30,11 +38,19 @@ type NoteRepositoryInterface interface {
 	DeleteNote(id int) error
 }
 
+// NoteRepository implements the NoteRepositoryInterface
 type NoteRepository struct {
 	db    *gorm.DB
 	redis *redis.Client
 }
 
+// NewNoteRepository is the factory function to create a new NoteRepository
+// Parameters:
+// -  db: gorm database client
+// -  rd: redis client
+//
+// Returns:
+// - *NoteRepository: A pointer to the newly created NoteRepository
 func NewNoteRepository(db *gorm.DB, rd *redis.Client) *NoteRepository {
 	return &NoteRepository{
 		db:    db,
@@ -42,16 +58,24 @@ func NewNoteRepository(db *gorm.DB, rd *redis.Client) *NoteRepository {
 	}
 }
 
+// convertMapToNote will convert a map[string]string to a Note object
+// Parameters:
+// -    noteMap: map[string]string that holds the note data
+// Returns:
+// - Note: the resulting note object
+// - error: any error that arises from this conversion
 func (repo *NoteRepository) convertMapToNote(noteMap map[string]string) (Note, error) {
+	// convert the id from string to integer
 	noteID, err := strconv.Atoi(noteMap["id"])
 	if err != nil {
 		return Note{}, err
 	}
+	// parse the created_at time string
 	createdAt, err := time.Parse(time.RFC3339Nano, noteMap["created_at"])
 	if err != nil {
 		return Note{}, err
 	}
-
+	// parse the updated_at time string
 	updatedAt, err := time.Parse(time.RFC3339Nano, noteMap["updated_at"])
 	if err != nil {
 		return Note{}, err
@@ -68,6 +92,7 @@ func (repo *NoteRepository) convertMapToNote(noteMap map[string]string) (Note, e
 	}, nil
 }
 
+// getNoteFromCache will get the note from the redis cache using the id
 func (repo *NoteRepository) getNoteFromCache(id int) *Note {
 	result := repo.redis.HGetAll(context.Background(), fmt.Sprintf("notes:%d", id)).Val()
 	if len(result) == 0 {
@@ -80,6 +105,7 @@ func (repo *NoteRepository) getNoteFromCache(id int) *Note {
 	return &note
 }
 
+// getNoteByTitleFromCache will get the note from the redis cache using the title
 func (repo *NoteRepository) getNoteByTitleFromCache(title string) *Note {
 	result := repo.redis.HGetAll(context.Background(), fmt.Sprintf("notes:%s", title)).Val()
 	if len(result) == 0 {
@@ -92,6 +118,9 @@ func (repo *NoteRepository) getNoteByTitleFromCache(title string) *Note {
 	return &note
 }
 
+// deleteFromCache will delete the note from redis by
+// deleting the entry stored under the notes id and the
+// entry stored under the notes title.
 func (repo *NoteRepository) deleteFromCache(note Note) error {
 	keysToDelete := make([]string, 0)
 	if note.ID > 0 {
@@ -103,6 +132,8 @@ func (repo *NoteRepository) deleteFromCache(note Note) error {
 	return repo.redis.Del(context.Background(), keysToDelete...).Err()
 }
 
+// cacheNote will store the note in redis using its id
+// as well as it's title
 func (repo *NoteRepository) cacheNote(note Note) error {
 	idHashKey := fmt.Sprintf("notes:%d", note.ID)
 	titleHashKey := fmt.Sprintf("notes:%s", note.Title)
@@ -126,6 +157,9 @@ func (repo *NoteRepository) cacheNote(note Note) error {
 	return nil
 }
 
+// SaveNote will store the note in the postgres database.
+// This would also invalidate the cache to ensure the next
+// read will update the cache with the latest data
 func (repo *NoteRepository) SaveNote(note *Note) error {
 	err := repo.deleteFromCache(*note)
 	if err != nil {
@@ -138,6 +172,10 @@ func (repo *NoteRepository) SaveNote(note *Note) error {
 	return nil
 }
 
+// GetNoteById will attempt to retrieve the note from the
+// redis cache by its id, if it doesn't find the note in redis
+// it will get it from postgres and store it in the cache
+// before returning it to the caller.
 func (repo *NoteRepository) GetNoteById(id int) *Note {
 	cachedNote := repo.getNoteFromCache(id)
 	if cachedNote != nil {
@@ -158,6 +196,10 @@ func (repo *NoteRepository) GetNoteById(id int) *Note {
 	return &note
 }
 
+// GetNoteByTitle will attempt to retrieve the note from the
+// redis cache by its title, if it doesn't find the note in redis
+// it will get it from postgres and store it in the cache
+// before returning it to the caller.
 func (repo *NoteRepository) GetNoteByTitle(title string) *Note {
 	cachedNote := repo.getNoteByTitleFromCache(title)
 	if cachedNote != nil {
@@ -178,6 +220,8 @@ func (repo *NoteRepository) GetNoteByTitle(title string) *Note {
 	return &note
 }
 
+// DeleteNote will delete the note from the cache first and
+// then postgres.
 func (repo *NoteRepository) DeleteNote(id int) error {
 	cachedNote := repo.getNoteFromCache(id)
 	if cachedNote != nil {
@@ -190,10 +234,12 @@ func (repo *NoteRepository) DeleteNote(id int) error {
 	return result.Error
 }
 
+// Application represents the application class
 type Application struct {
 	noteRepository NoteRepositoryInterface
 }
 
+// CreateNote is the application use case method to create a new note.
 func (app *Application) CreateNote(title string, content string) (Note, error) {
 	existingNote := app.noteRepository.GetNoteByTitle(title)
 	if existingNote != nil {
@@ -206,6 +252,7 @@ func (app *Application) CreateNote(title string, content string) (Note, error) {
 	return *note, nil
 }
 
+// UpdateNote is the application use case method to update an existing note.
 func (app *Application) UpdateNote(id int, content string) (Note, error) {
 	note := app.noteRepository.GetNoteById(id)
 	if note == nil {
@@ -219,6 +266,7 @@ func (app *Application) UpdateNote(id int, content string) (Note, error) {
 	return *note, nil
 }
 
+// GetNoteById is the application use case method to get a note by its id.
 func (app *Application) GetNoteById(id int) (Note, error) {
 	note := app.noteRepository.GetNoteById(id)
 	if note == nil {
@@ -227,6 +275,7 @@ func (app *Application) GetNoteById(id int) (Note, error) {
 	return *note, nil
 }
 
+// DeleteNote is the application use case method to delete a note.
 func (app *Application) DeleteNote(id int) error {
 	note := app.noteRepository.GetNoteById(id)
 	if note == nil {
