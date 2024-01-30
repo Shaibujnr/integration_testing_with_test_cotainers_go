@@ -24,5 +24,5 @@ here https://golang.testcontainers.org/system_requirements
 
 ## Setup
 1. Clone this repository
-2. Run `go get ./...`
+2. Run `go mod tidy`
 3. Run `go test -cover -v ./...`
